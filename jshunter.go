@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 
 	// "io/ioutil"
 	"math"
@@ -617,10 +616,10 @@ func ExtractEndpointsFromFile(filePath, regex string) []string {
 		return nil
 	}
 
-	return ExtractEndpointsFromContent(string(body), regex, "")
+	return ExtractEndpointsFromContent(string(body))
 }
 
-func ExtractEndpointsFromContent(content, regex, targetDomain string) []string {
+func ExtractEndpointsFromContent(content string) []string {
 	var endpoints []string
 	var baseURLs []string
 
@@ -697,51 +696,20 @@ func ExtractEndpointsFromContent(content, regex, targetDomain string) []string {
 			}
 		}
 	}
-
-	if targetDomain != "" {
-		if !strings.HasPrefix(targetDomain, "http") {
-			targetDomain = "https://" + targetDomain
-		}
-		targetDomain = strings.TrimRight(targetDomain, "/")
-
+	if len(baseURLs) > 0 {
+		baseURL := strings.TrimRight(baseURLs[0], "/")
 		for _, relEndpoint := range relativeEndpoints {
-			fullEndpoint := targetDomain + relEndpoint
+			fullEndpoint := baseURL + relEndpoint
 			if !Contains(endpoints, fullEndpoint) {
 				endpoints = append(endpoints, fullEndpoint)
 			}
 		}
 	} else {
-		if len(baseURLs) > 0 {
-			baseURL := strings.TrimRight(baseURLs[0], "/")
-			for _, relEndpoint := range relativeEndpoints {
-				fullEndpoint := baseURL + relEndpoint
-				if !Contains(endpoints, fullEndpoint) {
-					endpoints = append(endpoints, fullEndpoint)
-				}
-			}
-		} else {
-			for _, relEndpoint := range relativeEndpoints {
-				if !Contains(endpoints, relEndpoint) {
-					endpoints = append(endpoints, relEndpoint)
-				}
+		for _, relEndpoint := range relativeEndpoints {
+			if !Contains(endpoints, relEndpoint) {
+				endpoints = append(endpoints, relEndpoint)
 			}
 		}
-	}
-
-	if regex != "" {
-		filteredEndpoints := []string{}
-		customPattern, err := regexp.Compile(regex)
-		if err != nil {
-			fmt.Printf("Invalid regex pattern: %v\n", err)
-			return endpoints
-		}
-
-		for _, endpoint := range endpoints {
-			if customPattern.MatchString(endpoint) {
-				filteredEndpoints = append(filteredEndpoints, endpoint)
-			}
-		}
-		endpoints = filteredEndpoints
 	}
 
 	return endpoints
@@ -2971,7 +2939,7 @@ func ExtractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 		return nil
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		if len(body) == 0 {
 			return nil
@@ -2986,8 +2954,9 @@ func ExtractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 		return nil
 	}
 	baseURL := parsedURL.Scheme + "://" + parsedURL.Host
+	fmt.Printf("Full baseURL: %s", baseURL)
 
-	return ExtractEndpointsFromContent(string(processedBody), config.Regex, baseURL)
+	return ExtractEndpointsFromContent(string(processedBody))
 }
 
 // CrawlAndProcessJS recursively crawls and processes JS files
