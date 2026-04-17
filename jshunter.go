@@ -1,4 +1,4 @@
-package main
+package jshunter
 
 import (
 	"bufio"
@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/csv"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -248,7 +247,7 @@ var (
 )
 
 // progressReader wraps an io.Reader to track download progress
-type progressReader struct {
+type ProgressReader struct {
 	reader     io.Reader
 	total      int64
 	current    int64
@@ -256,7 +255,7 @@ type progressReader struct {
 	onProgress func(int64)
 }
 
-func (pr *progressReader) Read(p []byte) (int, error) {
+func (pr *ProgressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
 	pr.current += int64(n)
 
@@ -267,18 +266,6 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	}
 
 	return n, err
-}
-
-// flagList is a custom type for handling multiple header flags
-type flagList []string
-
-func (f *flagList) String() string {
-	return strings.Join(*f, ", ")
-}
-
-func (f *flagList) Set(value string) error {
-	*f = append(*f, value)
-	return nil
 }
 
 // Config holds all configuration options
@@ -311,361 +298,22 @@ type Config struct {
 	JSON, CSV, Verbose, Burp bool
 }
 
-func main() {
-	var (
-		url, list, jsFile, output, regex, cookies, proxy          string
-		threads                                                   int
-		quiet, help, update, extractEndpoints, skipTLS, foundOnly bool
-	)
+// CLI-only helpers removed from the library surface.
+/*
+statusColor := colors["GREEN"]
+statusText := "barely-w0rking"
 
-	// Advanced HTTP
-	var headers flagList
-	var userAgent string
-	var rateLimit, timeout, retry int
-
-	// JS Analysis
-	var deobfuscate, sourceMap, eval, obfsDetect bool
-
-	// Security Analysis
-	var secrets, tokens, params, paramURLs, internal, graphql, bypass, firebase, links bool
-
-	// Crawling & Scope
-	var crawlDepth int
-	var domain, ext string
-
-	// Output
-	var jsonOut, csvOut, verbose, burp bool
-
-	flag.StringVar(&url, "u", "", "Input a URL")
-	flag.StringVar(&url, "url", "", "Input a URL")
-	flag.StringVar(&list, "l", "", "Input a file with URLs (.txt)")
-	flag.StringVar(&list, "list", "", "Input a file with URLs (.txt)")
-	flag.StringVar(&jsFile, "f", "", "Path to JavaScript file")
-	flag.StringVar(&jsFile, "file", "", "Path to JavaScript file")
-	flag.StringVar(&output, "o", "", "Output file path")
-	flag.StringVar(&output, "output", "", "Output file path")
-	flag.StringVar(&regex, "r", "", "RegEx for filtering results (endpoints and sensitive data)")
-	flag.StringVar(&regex, "regex", "", "RegEx for filtering results (endpoints and sensitive data)")
-	flag.StringVar(&cookies, "c", "", "Cookies for authenticated JS files")
-	flag.StringVar(&cookies, "cookies", "", "Cookies for authenticated JS files")
-	flag.StringVar(&proxy, "p", "", "Set proxy (host:port)")
-	flag.StringVar(&proxy, "proxy", "", "Set proxy (host:port)")
-	flag.IntVar(&threads, "t", 5, "Number of concurrent threads")
-	flag.IntVar(&threads, "threads", 5, "Number of concurrent threads")
-	flag.BoolVar(&quiet, "q", false, "Quiet mode: suppress ASCII art output")
-	flag.BoolVar(&quiet, "quiet", false, "Quiet mode: suppress ASCII art output")
-	flag.BoolVar(&help, "h", false, "Display help message")
-	flag.BoolVar(&help, "help", false, "Display help message")
-	flag.BoolVar(&update, "update", false, "Update the tool with latest patterns")
-	flag.BoolVar(&update, "up", false, "Update the tool to latest version")
-	flag.BoolVar(&extractEndpoints, "ep", false, "Extract endpoints from JavaScript files")
-	flag.BoolVar(&extractEndpoints, "end-point", false, "Extract endpoints from JavaScript files")
-	flag.BoolVar(&skipTLS, "k", false, "Skip TLS certificate verification")
-	flag.BoolVar(&skipTLS, "skip-tls", false, "Skip TLS certificate verification")
-	flag.BoolVar(&foundOnly, "fo", false, "Only show results when sensitive data is found (hide MISSING messages)")
-	flag.BoolVar(&foundOnly, "found-only", false, "Only show results when sensitive data is found (hide MISSING messages)")
-
-	// Advanced HTTP flags
-	flag.Var(&headers, "H", "Custom HTTP headers (repeatable, format: 'Key: Value')")
-	flag.Var(&headers, "header", "Custom HTTP headers (repeatable, format: 'Key: Value')")
-	flag.StringVar(&userAgent, "U", "", "Custom User-Agent string or path to file containing user agents (one per line)")
-	flag.StringVar(&userAgent, "user-agent", "", "Custom User-Agent string or path to file containing user agents (one per line)")
-	flag.IntVar(&rateLimit, "R", 0, "Delay between requests (ms)")
-	flag.IntVar(&rateLimit, "rate-limit", 0, "Delay between requests (ms)")
-	flag.IntVar(&timeout, "T", 30, "Request timeout (seconds)")
-	flag.IntVar(&timeout, "timeout", 30, "Request timeout (seconds)")
-	flag.IntVar(&retry, "y", 2, "Retry failed requests")
-	flag.IntVar(&retry, "retry", 2, "Retry failed requests")
-
-	// JS Analysis flags
-	flag.BoolVar(&deobfuscate, "d", false, "Deobfuscate minified/obfuscated code")
-	flag.BoolVar(&deobfuscate, "deobfuscate", false, "Deobfuscate minified/obfuscated code")
-	flag.BoolVar(&sourceMap, "m", false, "Parse source maps for original JS")
-	flag.BoolVar(&sourceMap, "sourcemap", false, "Parse source maps for original JS")
-	flag.BoolVar(&eval, "e", false, "Analyze eval() & dynamic code")
-	flag.BoolVar(&eval, "eval", false, "Analyze eval() & dynamic code")
-	flag.BoolVar(&obfsDetect, "z", false, "Detect obfuscation techniques")
-	flag.BoolVar(&obfsDetect, "obfs-detect", false, "Detect obfuscation techniques")
-
-	// Security Analysis flags
-	flag.BoolVar(&secrets, "s", false, "API keys, tokens, credentials detection")
-	flag.BoolVar(&secrets, "secrets", false, "API keys, tokens, credentials detection")
-	flag.BoolVar(&tokens, "x", false, "JWT/auth tokens extraction")
-	flag.BoolVar(&tokens, "tokens", false, "JWT/auth tokens extraction")
-	flag.BoolVar(&params, "P", false, "Hidden parameters discovery")
-	flag.BoolVar(&params, "params", false, "Hidden parameters discovery")
-	flag.BoolVar(&paramURLs, "PU", false, "Advanced URL parameter extraction with base URLs")
-	flag.BoolVar(&paramURLs, "param-urls", false, "Advanced URL parameter extraction with base URLs")
-	flag.BoolVar(&internal, "i", false, "Internal/private endpoints only")
-	flag.BoolVar(&internal, "internal", false, "Internal/private endpoints only")
-	flag.BoolVar(&graphql, "g", false, "GraphQL endpoints & queries")
-	flag.BoolVar(&graphql, "graphql", false, "GraphQL endpoints & queries")
-	flag.BoolVar(&bypass, "B", false, "WAF bypass patterns detection")
-	flag.BoolVar(&bypass, "bypass", false, "WAF bypass patterns detection")
-	flag.BoolVar(&firebase, "F", false, "Firebase config/secrets detection")
-	flag.BoolVar(&firebase, "firebase", false, "Firebase config/secrets detection")
-	flag.BoolVar(&links, "L", false, "Extract all links/URLs from JS")
-	flag.BoolVar(&links, "links", false, "Extract all links/URLs from JS")
-
-	// Crawling & Scope flags
-	flag.IntVar(&crawlDepth, "w", 1, "Recursive JS crawling depth")
-	flag.IntVar(&crawlDepth, "crawl", 1, "Recursive JS crawling depth")
-	flag.StringVar(&domain, "D", "", "Scope to specific domain")
-	flag.StringVar(&domain, "domain", "", "Scope to specific domain")
-	flag.StringVar(&ext, "E", "", "Match specific JS file extensions (comma-separated)")
-	flag.StringVar(&ext, "ext", "", "Match specific JS file extensions (comma-separated)")
-
-	// Output flags
-	flag.BoolVar(&jsonOut, "j", false, "Structured JSON output")
-	flag.BoolVar(&jsonOut, "json", false, "Structured JSON output")
-	flag.BoolVar(&csvOut, "C", false, "CSV for Excel/Sheets import")
-	flag.BoolVar(&csvOut, "csv", false, "CSV for Excel/Sheets import")
-	flag.BoolVar(&verbose, "v", false, "Detailed analysis output")
-	flag.BoolVar(&verbose, "verbose", false, "Detailed analysis output")
-	flag.BoolVar(&burp, "n", false, "Burp Suite export format")
-	flag.BoolVar(&burp, "burp", false, "Burp Suite export format")
-
-	flag.Parse()
-
-	// Process User-Agent: check if it's a file path or a string
-	var userAgentsList []string
-	finalUserAgent := userAgent
-	if userAgent != "" {
-		// Check if it looks like a file path (contains path separators or common file extensions)
-		if strings.Contains(userAgent, "/") || strings.Contains(userAgent, "\\") ||
-			strings.HasSuffix(userAgent, ".txt") || strings.HasSuffix(userAgent, ".list") {
-			// Try to read as file
-			if fileInfo, err := os.Stat(userAgent); err == nil && !fileInfo.IsDir() {
-				// It's a file, read user agents from it
-				file, err := os.Open(userAgent)
-				if err == nil {
-					defer file.Close()
-					scanner := bufio.NewScanner(file)
-					for scanner.Scan() {
-						line := strings.TrimSpace(scanner.Text())
-						if line != "" && !strings.HasPrefix(line, "#") {
-							userAgentsList = append(userAgentsList, line)
-						}
-					}
-					if len(userAgentsList) > 0 {
-						// Select a random user agent from the list
-						rand.Seed(time.Now().UnixNano())
-						finalUserAgent = userAgentsList[rand.Intn(len(userAgentsList))]
-						if !quiet {
-							fmt.Printf("[%sINFO%s] Loaded %d user agents from file, using: %s\n",
-								colors["CYAN"], colors["NC"], len(userAgentsList), finalUserAgent)
-						}
-					} else {
-						if !quiet {
-							fmt.Printf("[%sWARN%s] User-Agent file is empty or contains no valid entries, using as string\n",
-								colors["YELLOW"], colors["NC"])
-						}
-					}
-				} else {
-					if !quiet {
-						fmt.Printf("[%sWARN%s] Could not read User-Agent file, using as string: %v\n",
-							colors["YELLOW"], colors["NC"], err)
-					}
-				}
-			}
-		}
-	}
-
-	// Create config object
-	config := Config{
-		URL: url, List: list, JSFile: jsFile, Output: output, Regex: regex,
-		Cookies: cookies, Proxy: proxy, Threads: threads,
-		Quiet: quiet, Help: help, Update: update, ExtractEndpoints: extractEndpoints,
-		SkipTLS: skipTLS, FoundOnly: foundOnly,
-		Headers: headers, UserAgent: finalUserAgent, UserAgents: userAgentsList, RateLimit: rateLimit,
-		Timeout: timeout, Retry: retry,
-		Deobfuscate: deobfuscate, SourceMap: sourceMap, Eval: eval, ObfsDetect: obfsDetect,
-		Secrets: secrets, Tokens: tokens, Params: params, ParamURLs: paramURLs, Internal: internal,
-		GraphQL: graphql, Bypass: bypass, Firebase: firebase, Links: links,
-		CrawlDepth: crawlDepth, Domain: domain, Ext: ext,
-		JSON: jsonOut, CSV: csvOut, Verbose: verbose, Burp: burp,
-	}
-
-	if help {
-		customHelp()
-		return
-	}
-
-	if config.URL == "" && config.List == "" && config.JSFile == "" {
-		if isInputFromStdin() {
-			// Show ASCII art before processing stdin if not quiet
-			if !config.Quiet {
-				time.Sleep(100 * time.Millisecond)
-				displayAsciiArt()
-			}
-
-			// Read all stdin content
-			stdinContent, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Error reading from stdin: %v\n", err)
-				}
-				return
-			}
-
-			content := string(stdinContent)
-
-			// Check if it looks like a list of URLs (each line is a URL)
-			lines := strings.Split(content, "\n")
-			urlCount := 0
-			jsLineCount := 0
-			totalLines := 0
-
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				totalLines++
-
-				// Check if line looks like a URL
-				if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
-					urlCount++
-				}
-				// Check if line looks like JavaScript
-				if strings.Contains(line, "function") ||
-					strings.Contains(line, "const ") ||
-					strings.Contains(line, "let ") ||
-					strings.Contains(line, "var ") ||
-					strings.Contains(line, "URLSearchParams") ||
-					strings.Contains(line, ".get(") ||
-					strings.Contains(line, "fetch(") ||
-					strings.Contains(line, "axios.") ||
-					strings.Contains(line, "//") ||
-					strings.Contains(line, "/*") {
-					jsLineCount++
-				}
-			}
-
-			// Determine if it's JavaScript or URL list
-			// Priority: If most lines are URLs, always treat as URL list (process each URL)
-			isJavaScript := false
-
-			if totalLines > 0 {
-				urlRatio := float64(urlCount) / float64(totalLines)
-
-				// If more than 50% are URLs, treat as URL list (process each URL individually)
-				if urlRatio > 0.5 {
-					isJavaScript = false
-				} else if config.ParamURLs || config.Params {
-					// Using -PU/-P flags, check if it's actually JS code
-					if jsLineCount > 5 ||
-						strings.Contains(content, "function ") ||
-						strings.Contains(content, "const urlParams") ||
-						strings.Contains(content, "new URLSearchParams") ||
-						strings.Contains(content, "URLSearchParams.get") {
-						// Clear JavaScript patterns
-						isJavaScript = true
-					} else {
-						// Default: treat as JavaScript when using -PU/-P
-						isJavaScript = true
-					}
-				} else {
-					// Without -PU/-P, check if it's JavaScript
-					if jsLineCount > 5 || strings.Contains(content, "function ") {
-						isJavaScript = true
-					}
-				}
-			}
-
-			if isJavaScript {
-				// Process as JavaScript content directly
-				source := "stdin"
-				bodyBytes := []byte(content)
-
-				if config.ParamURLs {
-					paramURLs := extractURLParamsWithBaseURLs(content, source)
-					if len(paramURLs) > 0 {
-						globalSeenMutex.Lock()
-						globalFoundAny = true // Mark that we found something
-						for _, paramURL := range paramURLs {
-							if !globalSeenAll[paramURL] {
-								globalSeenAll[paramURL] = true
-								fmt.Println(paramURL)
-							}
-						}
-						globalSeenMutex.Unlock()
-					}
-				} else if config.ExtractEndpoints {
-					endpoints := extractEndpointsFromContent(content, config.Regex, "")
-					displayEndpoints(endpoints, source)
-				} else {
-					// Process as sensitive data search - use reportMatchesWithConfig directly
-					reportMatchesWithConfig(source, bodyBytes, &config)
-				}
-			} else {
-				// Treat each line as URL/file path (old behavior)
-				scanner := bufio.NewScanner(strings.NewReader(content))
-				for scanner.Scan() {
-					inputURL := strings.TrimSpace(scanner.Text())
-					if inputURL == "" {
-						continue
-					}
-
-					if config.ExtractEndpoints {
-						processInputsForEndpointsWithConfig(inputURL, &config)
-					} else {
-						processInputsWithConfig(inputURL, &config)
-					}
-				}
-				if err := scanner.Err(); err != nil {
-					if !config.Quiet {
-						fmt.Fprintln(os.Stderr, "Error reading from stdin:", err)
-					}
-				}
-			}
-			return
-		}
-		customHelp()
-		os.Exit(1)
-	}
-
-	if !config.Quiet {
-		time.Sleep(100 * time.Millisecond)
-		displayAsciiArt()
-	}
-
-	if config.Quiet {
-		disableColors()
-	}
-
-	if config.JSFile != "" {
-		if config.ExtractEndpoints {
-			processJSFileForEndpointsWithConfig(config.JSFile, &config)
-		} else {
-			processJSFileWithConfig(config.JSFile, &config)
-		}
-		return
-	}
-
-	if config.ExtractEndpoints && (config.URL != "" || config.List != "") {
-		processInputsForEndpointsWithConfig(config.URL, &config)
-	} else {
-		processInputsWithConfig(config.URL, &config)
-	}
-}
-
-func displayAsciiArt() {
-	statusColor := colors["GREEN"]
-	statusText := "barely-w0rking"
-
-	fmt.Printf(`
-         ________             __         
+fmt.Printf(`
+         ________             __
      __ / / __/ /  __ _____  / /____ ____
     / // /\ \/ _ \/ // / _ \/ __/ -_) __/
-    \___/___/_//_/\_,_/_//_/\__/\__/_/  
+    \___/___/_//_/\_,_/_//_/\__/\__/_/
 
      %s (%s%s%s%s)                         Created by cc1a2b
 `, version, statusColor, statusText, colors["NC"], "")
 }
 
-func customHelp() {
-	usage := `
+usage := `
 Usage:
 -u, --url URL                 Input a URL
 -l, --list FILE.txt           Input a file with URLs (.txt)
@@ -715,41 +363,40 @@ Output Formats:
 	fmt.Printf("%s\n", usage)
 }
 
-func isInputFromStdin() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		fmt.Println("Error checking stdin:", err)
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice == 0
+fi, err := os.Stdin.Stat()
+if err != nil {
+	fmt.Println("Error checking stdin:", err)
+	return false
+}
+return fi.Mode()&os.ModeCharDevice == 0
 }
 
-func disableColors() {
-	for k := range colors {
-		colors[k] = ""
-	}
+for k := range colors {
+	colors[k] = ""
 }
+}
+*/
 
-func processJSFile(jsFile, regex string) {
+func ProcessJSFile(jsFile, regex string) {
 	// Create minimal config for backward compatibility
 	config := &Config{
 		Regex: regex,
 	}
-	processJSFileWithConfig(jsFile, config)
+	ProcessJSFileWithConfig(jsFile, config)
 }
 
-func enqueueURLs(url, list string, urlChannel chan<- string, regex string) error {
+func EnqueueURLs(url, list string, urlChannel chan<- string, regex string) error {
 	if list != "" {
-		return enqueueFromFile(list, urlChannel)
+		return EnqueueFromFile(list, urlChannel)
 	} else if url != "" {
-		enqueueSingleURL(url, urlChannel, regex)
+		EnqueueSingleURL(url, urlChannel, regex)
 	} else {
-		enqueueFromStdin(urlChannel)
+		EnqueueFromStdin(urlChannel)
 	}
 	return nil
 }
 
-func enqueueFromFile(filename string, urlChannel chan<- string) error {
+func EnqueueFromFile(filename string, urlChannel chan<- string) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return fmt.Errorf("Error opening file: %w", err)
@@ -763,15 +410,15 @@ func enqueueFromFile(filename string, urlChannel chan<- string) error {
 	return scanner.Err()
 }
 
-func enqueueSingleURL(url string, urlChannel chan<- string, regex string) {
+func EnqueueSingleURL(url string, urlChannel chan<- string, regex string) {
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
 		urlChannel <- url
 	} else {
-		processJSFile(url, regex)
+		ProcessJSFile(url, regex)
 	}
 }
 
-func enqueueFromStdin(urlChannel chan<- string) {
+func EnqueueFromStdin(urlChannel chan<- string) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		urlChannel <- scanner.Text()
@@ -781,8 +428,8 @@ func enqueueFromStdin(urlChannel chan<- string) {
 	}
 }
 
-// isTLSCanceledError checks if an error is a TLS cancellation error (common with proxy interception)
-func isTLSCanceledError(err error) bool {
+// IsTLSCanceledError checks if an error is a TLS cancellation error (common with proxy interception)
+func IsTLSCanceledError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -796,8 +443,8 @@ func isTLSCanceledError(err error) bool {
 		err == io.EOF // EOF can occur when proxy closes connection
 }
 
-// isJavaScriptContentType checks if the Content-Type header indicates JavaScript content
-func isJavaScriptContentType(contentType string) bool {
+// IsJavaScriptContentType checks if the Content-Type header indicates JavaScript content
+func IsJavaScriptContentType(contentType string) bool {
 	if contentType == "" {
 		return false
 	}
@@ -826,14 +473,14 @@ func isJavaScriptContentType(contentType string) bool {
 	return false
 }
 
-// isValidStatusCode checks if the HTTP status code indicates a successful response
-func isValidStatusCode(statusCode int) bool {
+// IsValidStatusCode checks if the HTTP status code indicates a successful response
+func IsValidStatusCode(statusCode int) bool {
 	// Accept 2xx status codes (successful responses)
 	return statusCode >= 200 && statusCode < 300
 }
 
-// isNonJavaScriptContentType checks if Content-Type indicates non-JavaScript content that should be filtered out
-func isNonJavaScriptContentType(contentType string) bool {
+// IsNonJavaScriptContentType checks if Content-Type indicates non-JavaScript content that should be filtered out
+func IsNonJavaScriptContentType(contentType string) bool {
 	if contentType == "" {
 		return false // Unknown content type, check URL extension instead
 	}
@@ -888,17 +535,17 @@ func isNonJavaScriptContentType(contentType string) bool {
 	}
 
 	// Filter out any text/* types that aren't JavaScript
-	if strings.HasPrefix(contentType, "text/") && !isJavaScriptContentType(contentType) {
+	if strings.HasPrefix(contentType, "text/") && !IsJavaScriptContentType(contentType) {
 		return true
 	}
 
 	return false
 }
 
-// shouldProcessResponse checks if the response should be processed based on Content-Type and status code
-func shouldProcessResponse(resp *http.Response, urlStr string, config *Config) bool {
+// ShouldProcessResponse checks if the response should be processed based on Content-Type and status code
+func ShouldProcessResponse(resp *http.Response, urlStr string, config *Config) bool {
 	// Check status code first - silently skip invalid status codes
-	if !isValidStatusCode(resp.StatusCode) {
+	if !IsValidStatusCode(resp.StatusCode) {
 		return false
 	}
 
@@ -906,12 +553,12 @@ func shouldProcessResponse(resp *http.Response, urlStr string, config *Config) b
 	contentType := resp.Header.Get("Content-Type")
 
 	// If Content-Type explicitly indicates non-JavaScript, skip it
-	if isNonJavaScriptContentType(contentType) {
+	if IsNonJavaScriptContentType(contentType) {
 		return false
 	}
 
 	// If Content-Type is JavaScript, process it
-	if isJavaScriptContentType(contentType) {
+	if IsJavaScriptContentType(contentType) {
 		return true
 	}
 
@@ -926,7 +573,7 @@ func shouldProcessResponse(resp *http.Response, urlStr string, config *Config) b
 	return hasJSExtension
 }
 
-func isUnwantedEmail(email string) bool {
+func IsUnwantedEmail(email string) bool {
 	unwantedPrefixes := []string{
 		"info@", "career@", "careers@", "jobs@", "admin@", "support@", "contact@",
 		"help@", "noreply@", "no-reply@", "test@", "demo@", "example@",
@@ -963,17 +610,17 @@ func isUnwantedEmail(email string) bool {
 	return false
 }
 
-func extractEndpointsFromFile(filePath, regex string) []string {
+func ExtractEndpointsFromFile(filePath, regex string) []string {
 	body, err := os.ReadFile(filePath)
 	if err != nil {
 		fmt.Printf("Error reading file %s: %v\n", filePath, err)
 		return nil
 	}
 
-	return extractEndpointsFromContent(string(body), regex, "")
+	return ExtractEndpointsFromContent(string(body), regex, "")
 }
 
-func extractEndpointsFromContent(content, regex, targetDomain string) []string {
+func ExtractEndpointsFromContent(content, regex, targetDomain string) []string {
 	var endpoints []string
 	var baseURLs []string
 
@@ -990,7 +637,7 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 		for _, match := range matches {
 			if len(match) > 1 {
 				baseURL := strings.Trim(match[1], `"'`)
-				if baseURL != "" && !contains(baseURLs, baseURL) {
+				if baseURL != "" && !Contains(baseURLs, baseURL) {
 					baseURLs = append(baseURLs, baseURL)
 				}
 			}
@@ -1014,9 +661,9 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 		for _, match := range matches {
 			if len(match) > 1 {
 				endpoint := strings.Trim(match[1], `"'`)
-				if endpoint != "" && !contains(relativeEndpoints, endpoint) {
-					endpoint = cleanEndpoint(endpoint)
-					if isValidEndpoint(endpoint) {
+				if endpoint != "" && !Contains(relativeEndpoints, endpoint) {
+					endpoint = CleanEndpoint(endpoint)
+					if IsValidEndpoint(endpoint) {
 						relativeEndpoints = append(relativeEndpoints, endpoint)
 					}
 				}
@@ -1032,8 +679,8 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 	for _, pattern := range fullURLPatterns {
 		matches := pattern.FindAllString(content, -1)
 		for _, match := range matches {
-			match = cleanEndpoint(match)
-			if match != "" && !contains(endpoints, match) && isValidEndpoint(match) {
+			match = CleanEndpoint(match)
+			if match != "" && !Contains(endpoints, match) && IsValidEndpoint(match) {
 				endpoints = append(endpoints, match)
 			}
 		}
@@ -1044,7 +691,7 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 		for _, relEndpoint := range relativeEndpoints {
 			if strings.HasPrefix(relEndpoint, "/") {
 				fullEndpoint := baseURL + relEndpoint
-				if !contains(endpoints, fullEndpoint) {
+				if !Contains(endpoints, fullEndpoint) {
 					endpoints = append(endpoints, fullEndpoint)
 				}
 			}
@@ -1059,7 +706,7 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 
 		for _, relEndpoint := range relativeEndpoints {
 			fullEndpoint := targetDomain + relEndpoint
-			if !contains(endpoints, fullEndpoint) {
+			if !Contains(endpoints, fullEndpoint) {
 				endpoints = append(endpoints, fullEndpoint)
 			}
 		}
@@ -1068,13 +715,13 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 			baseURL := strings.TrimRight(baseURLs[0], "/")
 			for _, relEndpoint := range relativeEndpoints {
 				fullEndpoint := baseURL + relEndpoint
-				if !contains(endpoints, fullEndpoint) {
+				if !Contains(endpoints, fullEndpoint) {
 					endpoints = append(endpoints, fullEndpoint)
 				}
 			}
 		} else {
 			for _, relEndpoint := range relativeEndpoints {
-				if !contains(endpoints, relEndpoint) {
+				if !Contains(endpoints, relEndpoint) {
 					endpoints = append(endpoints, relEndpoint)
 				}
 			}
@@ -1100,7 +747,7 @@ func extractEndpointsFromContent(content, regex, targetDomain string) []string {
 	return endpoints
 }
 
-func cleanEndpoint(endpoint string) string {
+func CleanEndpoint(endpoint string) string {
 
 	endpoint = strings.Trim(endpoint, `"'`)
 	endpoint = strings.TrimSpace(endpoint)
@@ -1120,7 +767,7 @@ func cleanEndpoint(endpoint string) string {
 	return endpoint
 }
 
-func isValidEndpoint(endpoint string) bool {
+func IsValidEndpoint(endpoint string) bool {
 
 	if endpoint == "" {
 		return false
@@ -1213,7 +860,7 @@ func isValidEndpoint(endpoint string) bool {
 	return true
 }
 
-func displayEndpoints(endpoints []string, source string) {
+func DisplayEndpoints(endpoints []string, source string) {
 	if len(endpoints) > 0 {
 		for _, endpoint := range endpoints {
 			fmt.Println(endpoint)
@@ -1221,7 +868,7 @@ func displayEndpoints(endpoints []string, source string) {
 	}
 }
 
-func writeEndpointsToFile(endpoints []string, outputFile, source string) {
+func WriteEndpointsToFile(endpoints []string, outputFile, source string) {
 	file, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Printf("Error opening output file: %v\n", err)
@@ -1238,7 +885,7 @@ func writeEndpointsToFile(endpoints []string, outputFile, source string) {
 	fmt.Printf("[%sSUCCESS%s] Endpoints saved to: %s\n", colors["GREEN"], colors["NC"], outputFile)
 }
 
-func contains(slice []string, item string) bool {
+func Contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
 			return true
@@ -1247,8 +894,8 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-// createHTTPClientWithConfig creates an HTTP client with all advanced options
-func createHTTPClientWithConfig(config *Config) *http.Client {
+// CreateHTTPClientWithConfig creates an HTTP client with all advanced options
+func CreateHTTPClientWithConfig(config *Config) *http.Client {
 	transport := &http.Transport{
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: config.SkipTLS},
 		DisableKeepAlives: false,
@@ -1320,8 +967,8 @@ func createHTTPClientWithConfig(config *Config) *http.Client {
 	}
 }
 
-// makeRequestWithRetry makes an HTTP request with retry logic and rate limiting
-func makeRequestWithRetry(client *http.Client, req *http.Request, config *Config) (*http.Response, error) {
+// MakeRequestWithRetry makes an HTTP request with retry logic and rate limiting
+func MakeRequestWithRetry(client *http.Client, req *http.Request, config *Config) (*http.Response, error) {
 	// Apply rate limiting
 	if config.RateLimit > 0 {
 		time.Sleep(time.Duration(config.RateLimit) * time.Millisecond)
@@ -1342,7 +989,7 @@ func makeRequestWithRetry(client *http.Client, req *http.Request, config *Config
 		}
 
 		// Don't retry on TLS cancellation errors (proxy interception)
-		if config.Proxy != "" && isTLSCanceledError(err) {
+		if config.Proxy != "" && IsTLSCanceledError(err) {
 			return nil, err
 		}
 
@@ -1357,8 +1004,8 @@ func makeRequestWithRetry(client *http.Client, req *http.Request, config *Config
 }
 
 // searchForSensitiveDataWithConfig enhanced version with all new features
-func searchForSensitiveDataWithConfig(urlStr string, config *Config) (string, map[string][]string) {
-	client := createHTTPClientWithConfig(config)
+func SearchForSensitiveDataWithConfig(urlStr string, config *Config) (string, map[string][]string) {
+	client := CreateHTTPClientWithConfig(config)
 	var sensitiveData map[string][]string
 
 	if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
@@ -1400,18 +1047,18 @@ func searchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 			req.Header.Set("Cookie", config.Cookies)
 		}
 
-		resp, err := makeRequestWithRetry(client, req, config)
+		resp, err := MakeRequestWithRetry(client, req, config)
 		if err != nil {
 			// Don't show errors in quiet mode
 			if !config.Quiet {
 				// Always show errors in verbose mode, or if not using proxy
 				if config.Verbose || config.Proxy == "" {
-					if !isTLSCanceledError(err) {
+					if !IsTLSCanceledError(err) {
 						fmt.Printf("[%sERROR%s] Request failed for %s: %v\n", colors["RED"], colors["NC"], urlStr, err)
 					} else if config.Verbose {
 						fmt.Printf("[%sINFO%s] TLS connection canceled (proxy interception): %s\n", colors["YELLOW"], colors["NC"], urlStr)
 					}
-				} else if !isTLSCanceledError(err) {
+				} else if !IsTLSCanceledError(err) {
 					// Show non-TLS errors even without verbose mode
 					fmt.Printf("[%sERROR%s] Request failed for %s: %v\n", colors["RED"], colors["NC"], urlStr, err)
 				}
@@ -1425,13 +1072,13 @@ func searchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 		defer resp.Body.Close()
 
 		// Filter: Only process JavaScript content
-		if !shouldProcessResponse(resp, urlStr, config) {
+		if !ShouldProcessResponse(resp, urlStr, config) {
 			return urlStr, nil
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			if config.Proxy == "" || !isTLSCanceledError(err) {
+			if config.Proxy == "" || !IsTLSCanceledError(err) {
 				if len(body) == 0 && config.Verbose {
 					fmt.Printf("Error reading response body: %v\n", err)
 				}
@@ -1443,8 +1090,8 @@ func searchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 
 		// Process JS analysis features
 		if len(body) > 0 {
-			processedBody := processJSAnalysis(body, config)
-			sensitiveData = reportMatchesWithConfig(urlStr, processedBody, config)
+			processedBody := ProcessJSAnalysis(body, config)
+			sensitiveData = ReportMatchesWithConfig(urlStr, processedBody, config)
 		} else {
 			sensitiveData = make(map[string][]string)
 		}
@@ -1457,23 +1104,23 @@ func searchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 			return urlStr, nil
 		}
 
-		processedBody := processJSAnalysis(body, config)
-		sensitiveData = reportMatchesWithConfig(urlStr, processedBody, config)
+		processedBody := ProcessJSAnalysis(body, config)
+		sensitiveData = ReportMatchesWithConfig(urlStr, processedBody, config)
 	}
 
 	return urlStr, sensitiveData
 }
 
-// processJSAnalysis applies JS analysis features (deobfuscation, sourcemap, etc.)
-func processJSAnalysis(body []byte, config *Config) []byte {
+// ProcessJSAnalysis applies JS analysis features (deobfuscation, sourcemap, etc.)
+func ProcessJSAnalysis(body []byte, config *Config) []byte {
 	content := string(body)
 
 	return []byte(content)
 }
 
 // INFO: you are here!
-// extractURLParamsWithBaseURLs - Advanced extraction of GET parameters with their base URLs
-func extractURLParamsWithBaseURLs(content, source string) []string {
+// ExtractURLParamsWithBaseURLs - Advanced extraction of GET parameters with their base URLs
+func ExtractURLParamsWithBaseURLs(content, source string) []string {
 	var resultURLs []string
 	seenURLs := make(map[string]bool)
 
@@ -1596,8 +1243,8 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 						}
 						if len(params) > 0 {
 							// Check if URL is from same base domain
-							urlDomain := extractBaseDomain(parsedURL.Host)
-							sourceBaseDomain := extractBaseDomain(extractDomain(source))
+							urlDomain := ExtractBaseDomain(parsedURL.Host)
+							sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 							if sourceBaseDomain == "" || urlDomain == sourceBaseDomain {
 								sort.Strings(params)
 								queryStr := strings.Join(params, "=&") + "="
@@ -1659,8 +1306,8 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 							}
 							if len(params) > 0 {
 								// Check if URL is from same base domain
-								urlDomain := extractBaseDomain(parsedURL.Host)
-								sourceBaseDomain := extractBaseDomain(extractDomain(source))
+								urlDomain := ExtractBaseDomain(parsedURL.Host)
+								sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 								if sourceBaseDomain == "" || urlDomain == sourceBaseDomain {
 									sort.Strings(params)
 									queryStr := strings.Join(params, "=&") + "="
@@ -1712,8 +1359,8 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 				// Check if URL is from same base domain
 				parsedAPIURL, err := url.Parse(apiURL)
 				if err == nil {
-					urlDomain := extractBaseDomain(parsedAPIURL.Host)
-					sourceBaseDomain := extractBaseDomain(extractDomain(source))
+					urlDomain := ExtractBaseDomain(parsedAPIURL.Host)
+					sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 					if sourceBaseDomain == "" || urlDomain == sourceBaseDomain {
 						sort.Strings(params)
 						queryStr := strings.Join(params, "=&") + "="
@@ -1777,8 +1424,8 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 						// Check if URL is from same base domain
 						parsedAPIURL, err := url.Parse(apiURL)
 						if err == nil {
-							urlDomain := extractBaseDomain(parsedAPIURL.Host)
-							sourceBaseDomain := extractBaseDomain(extractDomain(source))
+							urlDomain := ExtractBaseDomain(parsedAPIURL.Host)
+							sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 							if sourceBaseDomain == "" || urlDomain == sourceBaseDomain {
 								sort.Strings(params)
 								queryStr := strings.Join(params, "=&") + "="
@@ -1819,8 +1466,8 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 					}
 					if len(params) > 0 {
 						// Check if URL is from same base domain
-						urlDomain := extractBaseDomain(parsedURL.Host)
-						sourceBaseDomain := extractBaseDomain(extractDomain(source))
+						urlDomain := ExtractBaseDomain(parsedURL.Host)
+						sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 						if sourceBaseDomain == "" || urlDomain == sourceBaseDomain {
 							sort.Strings(params)
 							queryStr := strings.Join(params, "=&") + "="
@@ -1855,8 +1502,8 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 					}
 					if len(params) > 0 {
 						// Check if URL is from same base domain
-						urlDomain := extractBaseDomain(parsedURL.Host)
-						sourceBaseDomain := extractBaseDomain(extractDomain(source))
+						urlDomain := ExtractBaseDomain(parsedURL.Host)
+						sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 						if sourceBaseDomain == "" || urlDomain == sourceBaseDomain {
 							sort.Strings(params)
 							queryStr := strings.Join(params, "=&") + "="
@@ -1884,7 +1531,7 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 	// Always create URLs from all collected parameters (even if some URLs were found from fetch/axios)
 	if len(paramSet) > 0 {
 		// Group parameters by context - find parameters used together in same function
-		paramGroups := groupParamsByContext(content, paramSet)
+		paramGroups := GroupParamsByContext(content, paramSet)
 
 		// Try to find base URLs in the content
 		baseURLPatterns := []*regexp.Regexp{
@@ -1975,14 +1622,14 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 
 	// Filter URLs by domain - only include URLs from the same base domain as source
 	if sourceDomain != "" {
-		sourceBaseDomain := extractBaseDomain(extractDomain(source))
+		sourceBaseDomain := ExtractBaseDomain(ExtractDomain(source))
 		if sourceBaseDomain != "" {
 			filteredURLs := []string{}
 			for _, resultURL := range resultURLs {
 				// Extract domain from result URL
-				urlDomain := extractDomain(resultURL)
+				urlDomain := ExtractDomain(resultURL)
 				if urlDomain != "" {
-					urlBaseDomain := extractBaseDomain(urlDomain)
+					urlBaseDomain := ExtractBaseDomain(urlDomain)
 					// Only include if it's from the same base domain
 					if urlBaseDomain == sourceBaseDomain {
 						filteredURLs = append(filteredURLs, resultURL)
@@ -2000,7 +1647,7 @@ func extractURLParamsWithBaseURLs(content, source string) []string {
 }
 
 // groupParamsByContext groups parameters that are used together in the same function/context
-func groupParamsByContext(content string, paramSet map[string]bool) [][]string {
+func GroupParamsByContext(content string, paramSet map[string]bool) [][]string {
 	var groups [][]string
 	usedParams := make(map[string]bool)
 
@@ -2069,8 +1716,8 @@ func groupParamsByContext(content string, paramSet map[string]bool) [][]string {
 	return groups
 }
 
-// cleanURL removes trailing punctuation and invalid characters from URLs
-func cleanURL(urlStr string) string {
+// CleanURL removes trailing punctuation and invalid characters from URLs
+func CleanURL(urlStr string) string {
 	// Remove trailing punctuation: , ; \ ) | etc.
 	urlStr = strings.TrimRight(urlStr, ",;\\|)")
 
@@ -2083,8 +1730,8 @@ func cleanURL(urlStr string) string {
 	return urlStr
 }
 
-// isValidURL checks if a URL is valid (proper format, not malformed)
-func isValidURL(urlStr string) bool {
+// IsValidURL checks if a URL is valid (proper format, not malformed)
+func IsValidURL(urlStr string) bool {
 	// Parse the URL
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
@@ -2118,8 +1765,8 @@ func isValidURL(urlStr string) bool {
 	return true
 }
 
-// isPlaceholderURL checks if a URL is a placeholder/template (not a real URL)
-func isPlaceholderURL(urlStr string) bool {
+// IsPlaceholderURL checks if a URL is a placeholder/template (not a real URL)
+func IsPlaceholderURL(urlStr string) bool {
 	urlLower := strings.ToLower(urlStr)
 
 	// Common placeholder patterns
@@ -2145,8 +1792,8 @@ func isPlaceholderURL(urlStr string) bool {
 	return false
 }
 
-// isURLInComment checks if a URL appears to be in a JavaScript comment
-func isURLInComment(context, match string) bool {
+// IsURLInComment checks if a URL appears to be in a JavaScript comment
+func IsURLInComment(context, match string) bool {
 	// Find the position of the match in the context
 	matchPos := strings.Index(context, match)
 	if matchPos == -1 {
@@ -2188,8 +1835,8 @@ func isURLInComment(context, match string) bool {
 	return false
 }
 
-// isMatchInBase64DataURI checks if a match is inside a base64 data URI (e.g., data:image/png;base64,...)
-func isMatchInBase64DataURI(context, match string) bool {
+// IsMatchInBase64DataURI checks if a match is inside a base64 data URI (e.g., data:image/png;base64,...)
+func IsMatchInBase64DataURI(context, match string) bool {
 	// Find the position of the match in the context
 	matchPos := strings.Index(context, match)
 	if matchPos == -1 {
@@ -2236,10 +1883,10 @@ func isMatchInBase64DataURI(context, match string) bool {
 	return false
 }
 
-// isLikelyBase64MediaData checks if a match looks like base64-encoded media content
-func isLikelyBase64MediaData(context, match string) bool {
+// IsLikelyBase64MediaData checks if a match looks like base64-encoded media content
+func IsLikelyBase64MediaData(context, match string) bool {
 	// Check if the match itself looks like base64 data
-	if !looksLikeBase64(match) {
+	if !LooksLikeBase64(match) {
 		return false
 	}
 
@@ -2278,12 +1925,12 @@ func isLikelyBase64MediaData(context, match string) bool {
 	}
 
 	// Check for long base64 strings (likely media content)
-	if len(match) > 100 && hasHighBase64Entropy(match) {
+	if len(match) > 100 && HasHighBase64Entropy(match) {
 		return true
 	}
 
 	// Check if it's part of a larger base64 string
-	if isPartOfLargerBase64String(context, matchPos, len(match)) {
+	if IsPartOfLargerBase64String(context, matchPos, len(match)) {
 		return true
 	}
 
@@ -2291,7 +1938,7 @@ func isLikelyBase64MediaData(context, match string) bool {
 }
 
 // looksLikeBase64 checks if a string looks like base64 encoded data
-func looksLikeBase64(s string) bool {
+func LooksLikeBase64(s string) bool {
 	if len(s) < 16 { // Too short to be meaningful base64
 		return false
 	}
@@ -2311,7 +1958,7 @@ func looksLikeBase64(s string) bool {
 }
 
 // hasHighBase64Entropy checks if the string has high entropy typical of encoded data
-func hasHighBase64Entropy(s string) bool {
+func HasHighBase64Entropy(s string) bool {
 	if len(s) < 32 {
 		return false
 	}
@@ -2338,7 +1985,7 @@ func hasHighBase64Entropy(s string) bool {
 }
 
 // isPartOfLargerBase64String checks if the match is part of a larger base64 encoded string
-func isPartOfLargerBase64String(context string, matchPos, matchLen int) bool {
+func IsPartOfLargerBase64String(context string, matchPos, matchLen int) bool {
 	// Look at characters before and after the match
 	expandedStart := matchPos - 50
 	if expandedStart < 0 {
@@ -2352,15 +1999,15 @@ func isPartOfLargerBase64String(context string, matchPos, matchLen int) bool {
 	expandedString := context[expandedStart:expandedEnd]
 
 	// Check if the expanded string looks like base64
-	if len(expandedString) > len(context[matchPos:matchPos+matchLen])*2 && looksLikeBase64(expandedString) {
+	if len(expandedString) > len(context[matchPos:matchPos+matchLen])*2 && LooksLikeBase64(expandedString) {
 		return true
 	}
 
 	return false
 }
 
-// extractDomain extracts the domain from a URL string
-func extractDomain(urlStr string) string {
+// ExtractDomain extracts the domain from a URL string
+func ExtractDomain(urlStr string) string {
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		return ""
 	}
@@ -2379,8 +2026,8 @@ func extractDomain(urlStr string) string {
 	return host
 }
 
-// extractBaseDomain extracts the base domain (e.g., "target.com" from "assest.target.com")
-func extractBaseDomain(domain string) string {
+// ExtractBaseDomain extracts the base domain (e.g., "target.com" from "assest.target.com")
+func ExtractBaseDomain(domain string) string {
 	if domain == "" {
 		return ""
 	}
@@ -2411,13 +2058,13 @@ func extractBaseDomain(domain string) string {
 	return domain
 }
 
-// isMatchInURL checks if a match appears to be part of a URL from a different domain
-func isMatchInURL(context, match, sourceDomain string) bool {
+// IsMatchInURL checks if a match appears to be part of a URL from a different domain
+func IsMatchInURL(context, match, sourceDomain string) bool {
 	if sourceDomain == "" {
 		return false // Can't compare if source is not a URL
 	}
 
-	sourceBaseDomain := extractBaseDomain(sourceDomain)
+	sourceBaseDomain := ExtractBaseDomain(sourceDomain)
 	if sourceBaseDomain == "" {
 		return false
 	}
@@ -2429,9 +2076,9 @@ func isMatchInURL(context, match, sourceDomain string) bool {
 	for _, urlStr := range urls {
 		// Check if the match is contained within this URL
 		if strings.Contains(urlStr, match) {
-			urlDomain := extractDomain(urlStr)
+			urlDomain := ExtractDomain(urlStr)
 			if urlDomain != "" {
-				urlBaseDomain := extractBaseDomain(urlDomain)
+				urlBaseDomain := ExtractBaseDomain(urlDomain)
 				// If the URL's base domain doesn't match the source base domain, filter it out
 				if urlBaseDomain != "" && urlBaseDomain != sourceBaseDomain {
 					return true // Match is part of a URL from a different base domain
@@ -2443,14 +2090,14 @@ func isMatchInURL(context, match, sourceDomain string) bool {
 	return false
 }
 
-// filterMatchesByDomain filters out matches that are from URLs on different domains
-func filterMatchesByDomain(matches []string, sourceURL string) []string {
-	sourceDomain := extractDomain(sourceURL)
+// FilterMatchesByDomain filters out matches that are from URLs on different domains
+func FilterMatchesByDomain(matches []string, sourceURL string) []string {
+	sourceDomain := ExtractDomain(sourceURL)
 	if sourceDomain == "" {
 		return matches // Can't filter if source is not a URL
 	}
 
-	sourceBaseDomain := extractBaseDomain(sourceDomain)
+	sourceBaseDomain := ExtractBaseDomain(sourceDomain)
 	if sourceBaseDomain == "" {
 		return matches
 	}
@@ -2463,9 +2110,9 @@ func filterMatchesByDomain(matches []string, sourceURL string) []string {
 
 		// Check if match is a complete URL
 		if urlPattern.MatchString(match) {
-			matchDomain := extractDomain(match)
+			matchDomain := ExtractDomain(match)
 			if matchDomain != "" {
-				matchBaseDomain := extractBaseDomain(matchDomain)
+				matchBaseDomain := ExtractBaseDomain(matchDomain)
 				// Only include if it's from the same base domain
 				if matchBaseDomain != "" && matchBaseDomain != sourceBaseDomain {
 					shouldInclude = false // Different base domain URL
@@ -2481,7 +2128,7 @@ func filterMatchesByDomain(matches []string, sourceURL string) []string {
 				emailParts := strings.Split(match, "@")
 				if len(emailParts) == 2 {
 					emailDomain := emailParts[1]
-					emailBaseDomain := extractBaseDomain(emailDomain)
+					emailBaseDomain := ExtractBaseDomain(emailDomain)
 					// If email domain is from different base domain, filter it out
 					if emailBaseDomain != "" && emailBaseDomain != sourceBaseDomain {
 						shouldInclude = false
@@ -2501,8 +2148,8 @@ func filterMatchesByDomain(matches []string, sourceURL string) []string {
 	return filtered
 }
 
-// reportMatchesWithConfig enhanced reporting with all security analysis features
-func reportMatchesWithConfig(source string, body []byte, config *Config) map[string][]string {
+// ReportMatchesWithConfig enhanced reporting with all security analysis features
+func ReportMatchesWithConfig(source string, body []byte, config *Config) map[string][]string {
 	matchesMap := make(map[string][]string)
 
 	// Select patterns based on config
@@ -2664,7 +2311,7 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 	// Extract parameters - Advanced URL parameter detection with base URLs (new -PU flag)
 	if config.ParamURLs {
 		// Use advanced extraction that associates parameters with URLs
-		paramURLs := extractURLParamsWithBaseURLs(string(body), source)
+		paramURLs := ExtractURLParamsWithBaseURLs(string(body), source)
 
 		// Global deduplication across all files
 		globalSeenMutex.Lock()
@@ -2778,7 +2425,7 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 
 	// Run pattern matching
 	bodyStr := string(body)
-	sourceDomain := extractDomain(source)
+	sourceDomain := ExtractDomain(source)
 
 	for name, pattern := range patternsToUse {
 		if pattern.Match(body) {
@@ -2817,7 +2464,7 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 					context := bodyStr[contextStart:contextEnd]
 
 					// Check if match is part of a URL in the context
-					if isMatchInURL(context, match, sourceDomain) {
+					if IsMatchInURL(context, match, sourceDomain) {
 						continue // Skip this match - it's from a different domain URL
 					}
 
@@ -2833,19 +2480,19 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 					base64Context := bodyStr[base64ContextStart:base64ContextEnd]
 
 					// Check if match is inside a base64 data URI (e.g., data:image/png;base64,...)
-					if isMatchInBase64DataURI(base64Context, match) {
+					if IsMatchInBase64DataURI(base64Context, match) {
 						continue // Skip this match - it's part of base64 encoded image/data
 					}
 
 					// Check if match looks like base64-encoded media data (improved detection)
-					if isLikelyBase64MediaData(base64Context, match) {
+					if IsLikelyBase64MediaData(base64Context, match) {
 						continue // Skip this match - it's likely base64 encoded media content
 					}
 
 					// For Links flag, clean up URLs and filter
 					if config.Links && (name == "Link/URL") {
 						// Clean trailing punctuation and invalid characters
-						match = cleanURL(match)
+						match = CleanURL(match)
 
 						// Skip if URL is empty after cleaning
 						if match == "" {
@@ -2853,26 +2500,26 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 						}
 
 						// Validate URL format (skip malformed URLs like http://example.com:80x/)
-						if !isValidURL(match) {
+						if !IsValidURL(match) {
 							continue
 						}
 
 						// Skip placeholder/template URLs (like http://servername:port/accountURL)
-						if isPlaceholderURL(match) {
+						if IsPlaceholderURL(match) {
 							continue
 						}
 
 						// Check if URL is in a comment - skip if it is
-						if isURLInComment(context, match) {
+						if IsURLInComment(context, match) {
 							continue
 						}
 
 						// Filter: only show URLs from SAME base domain (user wants their own domain URLs)
 						// Skip external domains (like ad360plus.com, MuazKhan.com)
-						matchDomain := extractDomain(match)
+						matchDomain := ExtractDomain(match)
 						if matchDomain != "" && sourceDomain != "" {
-							matchBaseDomain := extractBaseDomain(matchDomain)
-							sourceBaseDomain := extractBaseDomain(sourceDomain)
+							matchBaseDomain := ExtractBaseDomain(matchDomain)
+							sourceBaseDomain := ExtractBaseDomain(sourceDomain)
 							// Skip URLs from DIFFERENT base domains (external URLs)
 							if matchBaseDomain != sourceBaseDomain {
 								continue
@@ -2881,7 +2528,7 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 					}
 
 					// Filter unwanted emails
-					if name == "Email" && isUnwantedEmail(match) {
+					if name == "Email" && IsUnwantedEmail(match) {
 						continue
 					}
 
@@ -2891,7 +2538,7 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 
 			if len(matches) > 0 {
 				// Additional filtering for known false positives
-				matches = filterMatchesByDomain(matches, source)
+				matches = FilterMatchesByDomain(matches, source)
 
 				if len(matches) > 0 {
 					if config.Regex != "" {
@@ -2948,11 +2595,11 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 		}
 
 		if config.JSON {
-			outputJSON(source, matchesMap)
+			OutputJSON(source, matchesMap)
 		} else if config.CSV {
-			outputCSV(source, matchesMap)
+			OutputCSV(source, matchesMap)
 		} else if config.Burp {
-			outputBurp(source, matchesMap)
+			OutputBurp(source, matchesMap)
 		} else {
 			// Show FOUND message (unless quiet mode)
 			if !config.Quiet {
@@ -3003,7 +2650,7 @@ func reportMatchesWithConfig(source string, body []byte, config *Config) map[str
 }
 
 // Output formatters
-func outputJSON(source string, matchesMap map[string][]string) {
+func OutputJSON(source string, matchesMap map[string][]string) {
 	result := map[string]interface{}{
 		"source":  source,
 		"matches": matchesMap,
@@ -3012,7 +2659,7 @@ func outputJSON(source string, matchesMap map[string][]string) {
 	fmt.Println(string(jsonData))
 }
 
-func outputCSV(source string, matchesMap map[string][]string) {
+func OutputCSV(source string, matchesMap map[string][]string) {
 	writer := csv.NewWriter(os.Stdout)
 	writer.Write([]string{"Source", "Type", "Value"})
 	for name, matches := range matchesMap {
@@ -3023,7 +2670,7 @@ func outputCSV(source string, matchesMap map[string][]string) {
 	writer.Flush()
 }
 
-func outputBurp(source string, matchesMap map[string][]string) {
+func OutputBurp(source string, matchesMap map[string][]string) {
 	// Burp Suite format (simplified)
 	for name, matches := range matchesMap {
 		for _, match := range matches {
@@ -3033,7 +2680,7 @@ func outputBurp(source string, matchesMap map[string][]string) {
 }
 
 // Wrapper functions using Config - enhanced versions
-func processInputsWithConfig(url string, config *Config) {
+func ProcessInputsWithConfig(url string, config *Config) {
 	// Reset global state for new processing session
 	globalSeenMutex.Lock()
 	globalFoundAny = false
@@ -3045,7 +2692,7 @@ func processInputsWithConfig(url string, config *Config) {
 	// Use crawling if depth > 1
 	if config.CrawlDepth > 1 && url != "" {
 		visited := make(map[string]bool)
-		crawlAndProcessJS(url, config, config.CrawlDepth, visited)
+		CrawlAndProcessJS(url, config, config.CrawlDepth, visited)
 		return
 	}
 
@@ -3068,7 +2715,7 @@ func processInputsWithConfig(url string, config *Config) {
 		go func() {
 			defer wg.Done()
 			for u := range urlChannel {
-				_, sensitiveData := searchForSensitiveDataWithConfig(u, config)
+				_, sensitiveData := SearchForSensitiveDataWithConfig(u, config)
 
 				// Don't print sensitive data if ParamURLs flag is set (user only wants URL params)
 				if !config.ParamURLs {
@@ -3085,7 +2732,7 @@ func processInputsWithConfig(url string, config *Config) {
 		}()
 	}
 
-	if err := enqueueURLs(url, config.List, urlChannel, config.Regex); err != nil {
+	if err := EnqueueURLs(url, config.List, urlChannel, config.Regex); err != nil {
 		fmt.Printf("Error in input processing: %v\n", err)
 		close(urlChannel)
 		return
@@ -3120,7 +2767,7 @@ func processInputsWithConfig(url string, config *Config) {
 	}
 }
 
-func processInputsForEndpointsWithConfig(url string, config *Config) {
+func ProcessInputsForEndpointsWithConfig(url string, config *Config) {
 	// Use enhanced endpoint extraction with config
 	var wg sync.WaitGroup
 	urlChannel := make(chan string)
@@ -3141,7 +2788,7 @@ func processInputsForEndpointsWithConfig(url string, config *Config) {
 		go func() {
 			defer wg.Done()
 			for u := range urlChannel {
-				endpoints := extractEndpointsFromURLWithConfig(u, config)
+				endpoints := ExtractEndpointsFromURLWithConfig(u, config)
 
 				if fileWriter != nil {
 					fmt.Fprintf(fileWriter, "URL: %s\n", u)
@@ -3158,7 +2805,7 @@ func processInputsForEndpointsWithConfig(url string, config *Config) {
 		}()
 	}
 
-	if err := enqueueURLs(url, config.List, urlChannel, config.Regex); err != nil {
+	if err := EnqueueURLs(url, config.List, urlChannel, config.Regex); err != nil {
 		fmt.Printf("Error in input processing: %v\n", err)
 		close(urlChannel)
 		return
@@ -3168,7 +2815,7 @@ func processInputsForEndpointsWithConfig(url string, config *Config) {
 	wg.Wait()
 }
 
-func processJSFileWithConfig(jsFile string, config *Config) {
+func ProcessJSFileWithConfig(jsFile string, config *Config) {
 	// Reset global state for new processing session
 	globalSeenMutex.Lock()
 	globalFoundAny = false
@@ -3187,7 +2834,7 @@ func processJSFileWithConfig(jsFile string, config *Config) {
 		if !config.Quiet {
 			fmt.Printf("[%sFOUND%s] FILE: %s\n", colors["RED"], colors["NC"], jsFile)
 		}
-		_, sensitiveData := searchForSensitiveDataWithConfig(jsFile, config)
+		_, sensitiveData := SearchForSensitiveDataWithConfig(jsFile, config)
 
 		// If user specified -o flag, write results to output file
 		if config.Output != "" {
@@ -3235,7 +2882,7 @@ func processJSFileWithConfig(jsFile string, config *Config) {
 	}
 }
 
-func processJSFileForEndpointsWithConfig(jsFile string, config *Config) {
+func ProcessJSFileForEndpointsWithConfig(jsFile string, config *Config) {
 	if _, err := os.Stat(jsFile); os.IsNotExist(err) {
 		fmt.Printf("[%sERROR%s] File not found: %s\n", colors["RED"], colors["NC"], jsFile)
 		return
@@ -3244,18 +2891,18 @@ func processJSFileForEndpointsWithConfig(jsFile string, config *Config) {
 		return
 	}
 
-	endpoints := extractEndpointsFromFile(jsFile, config.Regex)
+	endpoints := ExtractEndpointsFromFile(jsFile, config.Regex)
 
 	if config.Output != "" {
-		writeEndpointsToFile(endpoints, config.Output, jsFile)
+		WriteEndpointsToFile(endpoints, config.Output, jsFile)
 	} else {
-		displayEndpoints(endpoints, jsFile)
+		DisplayEndpoints(endpoints, jsFile)
 	}
 }
 
 // extractEndpointsFromURLWithConfig enhanced endpoint extraction with config
-func extractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
-	client := createHTTPClientWithConfig(config)
+func ExtractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
+	client := CreateHTTPClientWithConfig(config)
 
 	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
@@ -3297,17 +2944,17 @@ func extractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 		req.Header.Set("Cookie", config.Cookies)
 	}
 
-	resp, err := makeRequestWithRetry(client, req, config)
+	resp, err := MakeRequestWithRetry(client, req, config)
 	if err != nil {
 		// Don't show errors in quiet mode
 		if !config.Quiet {
 			if config.Verbose || config.Proxy == "" {
-				if !isTLSCanceledError(err) {
+				if !IsTLSCanceledError(err) {
 					fmt.Printf("[%sERROR%s] Request failed for %s: %v\n", colors["RED"], colors["NC"], urlStr, err)
 				} else if config.Verbose {
 					fmt.Printf("[%sINFO%s] TLS connection canceled (proxy interception): %s\n", colors["YELLOW"], colors["NC"], urlStr)
 				}
-			} else if !isTLSCanceledError(err) {
+			} else if !IsTLSCanceledError(err) {
 				fmt.Printf("[%sERROR%s] Request failed for %s: %v\n", colors["RED"], colors["NC"], urlStr, err)
 			}
 		}
@@ -3320,7 +2967,7 @@ func extractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 	defer resp.Body.Close()
 
 	// Filter: Only process JavaScript content
-	if !shouldProcessResponse(resp, urlStr, config) {
+	if !ShouldProcessResponse(resp, urlStr, config) {
 		return nil
 	}
 
@@ -3332,7 +2979,7 @@ func extractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 	}
 
 	// Process JS analysis
-	processedBody := processJSAnalysis(body, config)
+	processedBody := ProcessJSAnalysis(body, config)
 
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
@@ -3340,17 +2987,17 @@ func extractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 	}
 	baseURL := parsedURL.Scheme + "://" + parsedURL.Host
 
-	return extractEndpointsFromContent(string(processedBody), config.Regex, baseURL)
+	return ExtractEndpointsFromContent(string(processedBody), config.Regex, baseURL)
 }
 
-// crawlAndProcessJS recursively crawls and processes JS files
-func crawlAndProcessJS(initialURL string, config *Config, depth int, visited map[string]bool) {
+// CrawlAndProcessJS recursively crawls and processes JS files
+func CrawlAndProcessJS(initialURL string, config *Config, depth int, visited map[string]bool) {
 	if depth <= 0 || visited[initialURL] {
 		return
 	}
 	visited[initialURL] = true
 
-	client := createHTTPClientWithConfig(config)
+	client := CreateHTTPClientWithConfig(config)
 	req, err := http.NewRequest("GET", initialURL, nil)
 	if err != nil {
 		return
@@ -3378,7 +3025,7 @@ func crawlAndProcessJS(initialURL string, config *Config, depth int, visited map
 		req.Header.Set("Cookie", config.Cookies)
 	}
 
-	resp, err := makeRequestWithRetry(client, req, config)
+	resp, err := MakeRequestWithRetry(client, req, config)
 	if err != nil {
 		return
 	}
@@ -3390,7 +3037,7 @@ func crawlAndProcessJS(initialURL string, config *Config, depth int, visited map
 	}
 
 	// Process current page
-	searchForSensitiveDataWithConfig(initialURL, config)
+	SearchForSensitiveDataWithConfig(initialURL, config)
 
 	// Find JS file references
 	jsPattern := regexp.MustCompile(`(?:src|href)\s*=\s*["']([^"']+\.js[^"']*)["']`)
@@ -3438,7 +3085,7 @@ func crawlAndProcessJS(initialURL string, config *Config, depth int, visited map
 
 			// Recursively process
 			if !visited[jsURL] {
-				crawlAndProcessJS(jsURL, config, depth-1, visited)
+				CrawlAndProcessJS(jsURL, config, depth-1, visited)
 			}
 		}
 	}
