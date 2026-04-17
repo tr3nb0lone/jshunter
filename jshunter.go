@@ -616,10 +616,10 @@ func ExtractEndpointsFromFile(filePath, regex string) []string {
 		return nil
 	}
 
-	return ExtractEndpointsFromContent(string(body))
+	return ExtractEndpointsFromContent(string(body), "")
 }
 
-func ExtractEndpointsFromContent(content string) []string {
+func ExtractEndpointsFromContent(content, targetDomain string) []string {
 	var endpoints []string
 	var baseURLs []string
 
@@ -696,18 +696,33 @@ func ExtractEndpointsFromContent(content string) []string {
 			}
 		}
 	}
-	if len(baseURLs) > 0 {
-		baseURL := strings.TrimRight(baseURLs[0], "/")
+
+	if targetDomain != "" {
+		if !strings.HasPrefix(targetDomain, "http") {
+			targetDomain = "https://" + targetDomain
+		}
+		targetDomain = strings.TrimRight(targetDomain, "/")
+
 		for _, relEndpoint := range relativeEndpoints {
-			fullEndpoint := baseURL + relEndpoint
+			fullEndpoint := targetDomain + relEndpoint
 			if !Contains(endpoints, fullEndpoint) {
 				endpoints = append(endpoints, fullEndpoint)
 			}
 		}
 	} else {
-		for _, relEndpoint := range relativeEndpoints {
-			if !Contains(endpoints, relEndpoint) {
-				endpoints = append(endpoints, relEndpoint)
+		if len(baseURLs) > 0 {
+			baseURL := strings.TrimRight(baseURLs[0], "/")
+			for _, relEndpoint := range relativeEndpoints {
+				fullEndpoint := baseURL + relEndpoint
+				if !Contains(endpoints, fullEndpoint) {
+					endpoints = append(endpoints, fullEndpoint)
+				}
+			}
+		} else {
+			for _, relEndpoint := range relativeEndpoints {
+				if !Contains(endpoints, relEndpoint) {
+					endpoints = append(endpoints, relEndpoint)
+				}
 			}
 		}
 	}
@@ -862,7 +877,7 @@ func Contains(slice []string, item string) bool {
 	return false
 }
 
-// CreateHTTPClientWithConfig creates an HTTP client with all advanced options
+// // CreateHTTPClientWithConfig creates an HTTP client with all advanced options
 func CreateHTTPClientWithConfig(config *Config) *http.Client {
 	transport := &http.Transport{
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: config.SkipTLS},
@@ -1058,7 +1073,7 @@ func SearchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 
 		// Process JS analysis features
 		if len(body) > 0 {
-			processedBody := ProcessJSAnalysis(body, config)
+			processedBody := ProcessJSAnalysis(body)
 			sensitiveData = ReportMatchesWithConfig(urlStr, processedBody, config)
 		} else {
 			sensitiveData = make(map[string][]string)
@@ -1072,7 +1087,7 @@ func SearchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 			return urlStr, nil
 		}
 
-		processedBody := ProcessJSAnalysis(body, config)
+		processedBody := ProcessJSAnalysis(body)
 		sensitiveData = ReportMatchesWithConfig(urlStr, processedBody, config)
 	}
 
@@ -1080,7 +1095,7 @@ func SearchForSensitiveDataWithConfig(urlStr string, config *Config) (string, ma
 }
 
 // ProcessJSAnalysis applies JS analysis features (deobfuscation, sourcemap, etc.)
-func ProcessJSAnalysis(body []byte, config *Config) []byte {
+func ProcessJSAnalysis(body []byte) []byte {
 	content := string(body)
 
 	return []byte(content)
@@ -2756,7 +2771,7 @@ func ProcessInputsForEndpointsWithConfig(url string, config *Config) {
 		go func() {
 			defer wg.Done()
 			for u := range urlChannel {
-				endpoints := ExtractEndpointsFromURLWithConfig(u, config)
+				endpoints := ExtractEndpointsFromURLWithConfig(u)
 
 				if fileWriter != nil {
 					fmt.Fprintf(fileWriter, "URL: %s\n", u)
@@ -2869,75 +2884,21 @@ func ProcessJSFileForEndpointsWithConfig(jsFile string, config *Config) {
 }
 
 // extractEndpointsFromURLWithConfig enhanced endpoint extraction with config
-func ExtractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
-	client := CreateHTTPClientWithConfig(config)
+func ExtractEndpointsFromURLWithConfig(jsurl string) []string {
+	req, _ := http.NewRequest("GET", jsurl, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0") // appear as legit request
 
-	req, err := http.NewRequest("GET", urlStr, nil)
+	tr := &http.Transport{}
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // insecure!
+
+	client := &http.Client{Transport: tr}
+
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		fmt.Printf("Error making the request: %s\n", err)
 	}
 
-	// Apply custom headers
-	for _, header := range config.Headers {
-		parts := strings.SplitN(header, ":", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			req.Header.Set(key, value)
-			if config.Verbose {
-				fmt.Printf("[%sINFO%s] Added header: %s: %s\n", colors["CYAN"], colors["NC"], key, value)
-			}
-		} else if config.Verbose {
-			fmt.Printf("[%sWARN%s] Invalid header format (expected 'Key: Value'): %s\n", colors["YELLOW"], colors["NC"], header)
-		}
-	}
-
-	// Apply custom User-Agent (randomly select from list if available)
-	if len(config.UserAgents) > 0 {
-		// Randomly select a user agent from the list for each request
-		rand.Seed(time.Now().UnixNano() + int64(len(req.URL.String())))
-		selectedUA := config.UserAgents[rand.Intn(len(config.UserAgents))]
-		req.Header.Set("User-Agent", selectedUA)
-		if config.Verbose {
-			fmt.Printf("[%sINFO%s] Using User-Agent: %s\n", colors["CYAN"], colors["NC"], selectedUA)
-		}
-	} else if config.UserAgent != "" {
-		req.Header.Set("User-Agent", config.UserAgent)
-		if config.Verbose {
-			fmt.Printf("[%sINFO%s] Using User-Agent: %s\n", colors["CYAN"], colors["NC"], config.UserAgent)
-		}
-	}
-
-	if config.Cookies != "" {
-		req.Header.Set("Cookie", config.Cookies)
-	}
-
-	resp, err := MakeRequestWithRetry(client, req, config)
-	if err != nil {
-		// Don't show errors in quiet mode
-		if !config.Quiet {
-			if config.Verbose || config.Proxy == "" {
-				if !IsTLSCanceledError(err) {
-					fmt.Printf("[%sERROR%s] Request failed for %s: %v\n", colors["RED"], colors["NC"], urlStr, err)
-				} else if config.Verbose {
-					fmt.Printf("[%sINFO%s] TLS connection canceled (proxy interception): %s\n", colors["YELLOW"], colors["NC"], urlStr)
-				}
-			} else if !IsTLSCanceledError(err) {
-				fmt.Printf("[%sERROR%s] Request failed for %s: %v\n", colors["RED"], colors["NC"], urlStr, err)
-			}
-		}
-		return nil
-	}
-
-	if config.Verbose {
-		fmt.Printf("[%sINFO%s] Successfully fetched %s (Status: %d)\n", colors["GREEN"], colors["NC"], urlStr, resp.StatusCode)
-	}
 	defer resp.Body.Close()
-
-	// Filter: Only process JavaScript content
-	if !ShouldProcessResponse(resp, urlStr, config) {
-		return nil
-	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -2947,16 +2908,15 @@ func ExtractEndpointsFromURLWithConfig(urlStr string, config *Config) []string {
 	}
 
 	// Process JS analysis
-	processedBody := ProcessJSAnalysis(body, config)
+	processedBody := ProcessJSAnalysis(body)
 
-	parsedURL, err := url.Parse(urlStr)
+	parsedURL, err := url.Parse(jsurl)
 	if err != nil {
 		return nil
 	}
 	baseURL := parsedURL.Scheme + "://" + parsedURL.Host
-	fmt.Printf("Full baseURL: %s", baseURL)
 
-	return ExtractEndpointsFromContent(string(processedBody))
+	return ExtractEndpointsFromContent(string(processedBody), baseURL)
 }
 
 // CrawlAndProcessJS recursively crawls and processes JS files
