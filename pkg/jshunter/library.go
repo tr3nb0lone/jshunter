@@ -2,12 +2,12 @@ package jshunter
 
 import "fmt"
 
-// NewConfig returns a library-oriented default configuration.
+// Bootstraps an opinionated config
 func NewConfig() *Config {
 	return &Config{
 		Threads:        5,
 		Timeout:        30,
-		Retry:          2,
+		Retry:          3,
 		MinConfidence:  DefaultMinConfidence,
 		MaxBytes:       DefaultMaxBytes,
 		VerifyTimeout:  6,
