@@ -1,6 +1,6 @@
 package main
 
-import "github.com/cc1a2b/jshunter/internal/jshunter"
+import "github.com/tr3nb0lone/jshunter/pkg/jshunter"
 
 func main() {
 	jshunter.Run()
